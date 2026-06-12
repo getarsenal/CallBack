@@ -287,6 +287,7 @@ tbody td{padding:12px 14px;vertical-align:middle}
         <input id="search" placeholder="Search company, role, person…" autocomplete="off"/>
       </div>
       <button class="btn primary" data-act="add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>Add role</button>
+      <button class="x-btn" data-act="settings" id="settingsBtn" title="Settings & sync" style="position:relative"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span id="syncDot" style="display:none;position:absolute;top:-2px;right:-2px;width:9px;height:9px;border-radius:50%;background:var(--good);border:2px solid var(--bg)"></span></button>
     </div>
     <div class="content" id="content"></div>
   </main>
@@ -339,10 +340,82 @@ let drawerTab = "overview";
 
 /* ============================ STORAGE ============================ */
 function load(){
-  try{ const r = localStorage.getItem(LS_KEY); if(r) return JSON.parse(r); }catch(e){}
-  return { opportunities:[], meta:{created:Date.now()} };
+  try{ const r = localStorage.getItem(LS_KEY); if(r){ const s=JSON.parse(r);
+    // migrate: derive a real revision from the newest record so cloud-seed comparisons work
+    if(s.rev==null) s.rev = (s.opportunities||[]).reduce((m,o)=>Math.max(m,+o.updatedAt||0),0);
+    return s; } }catch(e){}
+  return { opportunities:[], meta:{created:Date.now()}, rev:0 };
 }
-function save(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){ toast("⚠ Couldn't save — storage full?"); } }
+function persist(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){ toast("⚠ Couldn't save — storage full?"); } }
+// save() = a real user change: bump revision, persist, and push to cloud
+function save(){ state.rev = Date.now(); persist(); schedulePush(); }
+
+/* ============================ CLOUD SYNC (Supabase) ============================ */
+const SYNC_KEY = "callback_sync_cfg_v1";
+let sync = loadSync();
+let syncState = "off";           // off | idle | saving | pulling | error
+let pushTimer = null, pulling = false;
+function loadSync(){ try{ return JSON.parse(localStorage.getItem(SYNC_KEY)) || {}; }catch(e){ return {}; } }
+function saveSync(){ localStorage.setItem(SYNC_KEY, JSON.stringify(sync)); }
+function syncOn(){ return !!(sync.url && sync.key && sync.code); }
+
+function setSyncState(s,msg){ syncState=s; updateSyncUI(msg); }
+function updateSyncUI(msg){
+  const dot=$("#syncDot"); if(dot){ dot.style.display = syncOn()?"block":"none";
+    dot.style.background = syncState==="error"?"var(--bad)":syncState==="saving"||syncState==="pulling"?"var(--warn)":"var(--good)"; }
+  const lbl=$("#syncStatusLbl");
+  if(lbl){ const map={off:"Not connected",idle:"Synced ✓",saving:"Saving…",pulling:"Checking cloud…",error:"⚠ "+(msg||"Sync error")}; lbl.textContent=map[syncState]||""; lbl.style.color = syncState==="error"?"var(--bad)":syncState==="idle"?"var(--good)":"var(--muted)"; }
+}
+async function rpc(fn, body){
+  const base = sync.url.replace(/\/+$/,"");
+  const res = await fetch(`${base}/rest/v1/rpc/${fn}`,{
+    method:"POST",
+    headers:{ "Content-Type":"application/json", "apikey":sync.key, "Authorization":"Bearer "+sync.key },
+    body: JSON.stringify(body)
+  });
+  if(!res.ok){ throw new Error("HTTP "+res.status+" "+(await res.text()).slice(0,120)); }
+  const txt = await res.text(); return txt ? JSON.parse(txt) : null;
+}
+function schedulePush(){ if(!syncOn()) return; clearTimeout(pushTimer); pushTimer=setTimeout(pushNow, 1500); }
+async function pushNow(){
+  if(!syncOn()) return;
+  try{ setSyncState("saving");
+    await rpc("set_vault",{ p_code:sync.code, p_data:state, p_updated: state.rev||0 });
+    setSyncState("idle");
+  }catch(e){ setSyncState("error", e.message); }
+}
+async function pullNow(opts){
+  opts=opts||{};
+  if(!syncOn()||pulling) return;
+  pulling=true; setSyncState("pulling");
+  try{
+    const rows = await rpc("get_vault",{ p_code:sync.code });
+    const row = Array.isArray(rows)?rows[0]:rows;
+    if(row && row.data){
+      const remote=row.data, rRev=+row.updated_at||remote.rev||0;
+      if(rRev > (state.rev||0)){
+        state=remote; persist();
+        if(openId && !getOp()) closeDrawer(); else if(openId) renderDrawer();
+        render(); if(!opts.silent) toast("Synced latest from cloud");
+      } else if((state.rev||0) > rRev){
+        await pushNow(); // local is newer — push it up
+      }
+    } else {
+      // nothing in cloud yet — seed it with whatever we have locally
+      await pushNow();
+    }
+    setSyncState("idle");
+  }catch(e){ setSyncState("error", e.message); if(!opts.silent) toast("⚠ Sync: "+e.message); }
+  pulling=false;
+}
+function initSync(){
+  updateSyncUI();
+  if(syncOn()){ setSyncState("idle"); pullNow({silent:true}); }
+  window.addEventListener("online", ()=> syncOn() && pullNow({silent:true}));
+  window.addEventListener("focus", ()=> syncOn() && pullNow({silent:true}));
+  document.addEventListener("visibilitychange", ()=>{ if(!document.hidden && syncOn()) pullNow({silent:true}); });
+}
+function randomCode(){ const w=["amber","brisk","cobalt","delta","ember","fjord","glint","harbor","ivory","jade","koala","lunar","maple","nimbus","onyx","pixel","quartz","raven","slate","tidal","umber","vivid","willow","xenon","yonder","zephyr"]; const p=()=>w[Math.floor(Math.random()*w.length)]; const n=Math.floor(Math.random()*9000+1000); return [p(),p(),p(),n].join("-"); }
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 
 /* ============================ HELPERS ============================ */
@@ -843,12 +916,95 @@ let editorEl=null;
 function openEditor(html){
   closeEditor();
   editorEl=el(`<div class="overlay show" id="editorOverlay" style="display:grid;place-items:center;padding:18px;overflow:auto">
-    <div class="card" style="width:min(540px,100%);max-height:92vh;overflow:auto;padding:22px" onclick="event.stopPropagation()">${html}</div></div>`);
+    <div class="card" style="width:min(540px,100%);max-height:92vh;overflow:auto;padding:22px">${html}</div></div>`);
   document.body.appendChild(editorEl);
-  editorEl.addEventListener("click",closeEditor);
+  editorEl.addEventListener("click",e=>{ if(e.target===editorEl) closeEditor(); }); // only background closes
   const f=editorEl.querySelector("input,textarea,select"); if(f) setTimeout(()=>f.focus(),50);
 }
 function closeEditor(){ if(editorEl){ editorEl.remove(); editorEl=null; } }
+
+/* ---------------- SETTINGS / SYNC PANEL ---------------- */
+const SYNC_SQL = `-- Run this once in Supabase: Dashboard > SQL Editor > New query > paste > Run
+create table if not exists vaults (
+  code text primary key,
+  data jsonb not null,
+  updated_at bigint not null default 0
+);
+alter table vaults enable row level security;
+
+create or replace function get_vault(p_code text)
+returns setof vaults language sql security definer set search_path = public as $$
+  select * from vaults where code = p_code;
+$$;
+
+create or replace function set_vault(p_code text, p_data jsonb, p_updated bigint)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  insert into vaults(code, data, updated_at) values (p_code, p_data, p_updated)
+  on conflict (code) do update set data = excluded.data, updated_at = excluded.updated_at;
+end;
+$$;
+
+grant execute on function get_vault(text)  to anon;
+grant execute on function set_vault(text, jsonb, bigint) to anon;`;
+
+function openSettings(){
+  const connected = syncOn();
+  const setupOpen = !connected;
+  const body = `
+  <div style="display:flex;align-items:center;gap:11px;margin-bottom:6px">
+    <div style="width:36px;height:36px;border-radius:11px;background:var(--grad);display:grid;place-items:center">${I.spark}</div>
+    <div><h2 style="margin:0;font-size:18px;font-weight:850">Settings</h2><div style="font-size:12.5px;color:var(--faint)">Sync, backup & data</div></div>
+    <button class="x-btn" data-act="cancel-editor" style="margin-left:auto">${I.x}</button>
+  </div>
+
+  <div class="ai-box" style="margin-top:14px">
+    <div class="ai-head">${I.link} Cloud sync <span id="syncStatusLbl" style="margin-left:auto;font-size:12px;font-weight:700"></span></div>
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px">Sync your phone &amp; computer through a free Supabase project. Every device that shares the same <b>sync code</b> stays up to date automatically.</div>
+
+    <details ${setupOpen?"open":""} style="margin-bottom:14px">
+      <summary style="cursor:pointer;font-weight:800;font-size:13px;color:var(--accent3)">① One-time Supabase setup (≈5 min)</summary>
+      <ol style="font-size:12.5px;color:var(--muted);line-height:1.7;padding-left:18px;margin:10px 0">
+        <li>Make a free account at <a href="https://supabase.com" target="_blank" rel="noopener">supabase.com</a> → <b>New project</b> (pick any name &amp; password).</li>
+        <li>Open <b>SQL Editor → New query</b>, paste the snippet below, hit <b>Run</b>.<br>
+          <button class="btn sm ghost" data-act="copy-sql" style="margin-top:6px">${I.copy} Copy setup SQL</button></li>
+        <li>Open <b>Project Settings → API</b>. Copy the <b>Project URL</b> and the <b>anon public</b> key into the boxes below.</li>
+      </ol>
+    </details>
+
+    <div class="form-row"><label>Supabase Project URL</label><input id="syncUrl" value="${esc(sync.url||"")}" placeholder="https://xxxx.supabase.co"/></div>
+    <div class="form-row"><label>anon public key</label><input id="syncKeyInput" value="${esc(sync.key||"")}" placeholder="eyJhbGciOi…"/></div>
+    <div class="form-row"><label>Your private sync code <span style="color:var(--faint);font-weight:500">— same on every device</span></label>
+      <div style="display:flex;gap:8px"><input id="syncCode" value="${esc(sync.code||randomCode())}" placeholder="amber-slate-pixel-4821"/>
+      <button class="btn ghost sm" data-act="sync-gencode" title="New random code">↻</button></div>
+      <div style="font-size:11.5px;color:var(--faint);margin-top:5px">Treat this like a password — anyone with it can read your data. On your <b>second</b> device, enter this <i>exact</i> code to pull everything in.</div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+      <button class="btn primary sm" data-act="sync-connect">${I.check} ${connected?"Save & sync now":"Connect & sync"}</button>
+      ${connected?`<button class="btn ghost sm" data-act="sync-pull">↓ Pull latest</button><button class="btn ghost sm" data-act="copy-code">${I.copy} Copy code</button><button class="btn ghost sm danger" data-act="sync-disconnect">Disconnect</button>`:""}
+    </div>
+  </div>
+
+  <div class="section-head"><h3>Backup & data</h3><div class="line"></div></div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <button class="btn ghost sm" data-act="export">${I.copy} Export backup</button>
+    <button class="btn ghost sm" data-act="import">↑ Import backup</button>
+    <button class="btn ghost sm" data-act="sample">${I.spark} Load demo data</button>
+  </div>
+  <div style="font-size:11.5px;color:var(--faint);margin-top:10px">Tip: even with cloud sync on, an occasional exported backup is a good safety net.</div>`;
+  openEditor(body);
+  updateSyncUI();
+}
+function connectSync(){
+  const url=(document.querySelector('#syncUrl').value||"").trim();
+  const key=(document.querySelector('#syncKeyInput').value||"").trim();
+  const code=(document.querySelector('#syncCode').value||"").trim();
+  if(!url||!key||!code){ toast("Fill in URL, key and a sync code"); return; }
+  if(!/^https:\/\/.+\.supabase\.co/.test(url)){ toast("That URL doesn't look like a Supabase URL"); return; }
+  sync={url,key,code}; saveSync();
+  toast("Connecting…");
+  pullNow().then(()=>{ if(syncState!=="error"){ toast("☁ Cloud sync is on"); openSettings(); } });
+}
 
 function opForm(o){
   const isNew=!o;
@@ -965,6 +1121,13 @@ document.addEventListener("click",e=>{
   if(act==="export"){ exportData(); return; }
   if(act==="import"){ $("#fileInput").click(); return; }
   if(act==="sample"){ loadSample(); return; }
+  if(act==="settings"){ openSettings(); return; }
+  if(act==="sync-connect"){ connectSync(); return; }
+  if(act==="sync-disconnect"){ if(confirm("Disconnect cloud sync on this device? Your data stays here; it just stops syncing.")){ sync={}; saveSync(); setSyncState("off"); openSettings(); } return; }
+  if(act==="sync-gencode"){ const f=document.querySelector('#syncCode'); if(f) f.value=randomCode(); return; }
+  if(act==="sync-pull"){ pullNow(); return; }
+  if(act==="copy-sql"){ copy(SYNC_SQL,"SQL copied — paste into Supabase SQL editor"); return; }
+  if(act==="copy-code"){ copy(sync.code||"", "Sync code copied"); return; }
 
   // round/person edit/delete
   if(t.dataset.editRound){ const r=getOp().rounds.find(x=>x.id===t.dataset.editRound); openEditor(roundForm(r)); editorEl.dataset.editId=r.id; return; }
@@ -1108,6 +1271,7 @@ try{
 }catch(e){}
 
 render();
+initSync();
 </script>
 </body>
 </html>
