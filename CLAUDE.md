@@ -27,6 +27,10 @@ you paste into a new AI chat to prep for interviews.
 - `HELPERS`, `ICONS` (the `I` object), `NAV`, `RENDER ROUTER`.
 - View renderers: `renderDashboard / renderPipeline / renderTable (+renderRoleCards) / renderCalendar / renderInsights`.
 - `CHARTS` — hand-rolled SVG (funnel bars + donut). No chart library on purpose.
+- `OFFER SCORECARD` — weighted decision matrix across competing offers (status `offer`).
+  `openScorecard()` modal; `scorecardBody()`; `scResult()` (weighted 1–5 avg over rated criteria);
+  `scorecardPrompt()` (AI decision brief); `scorecardTeaser()` surfaces it on Dashboard/Insights
+  once ≥2 offers exist. State lives in `state.scorecard` (lazily created via `getScorecard()`).
 - `DRAWER: DETAIL` — per-role drawer with tabs: `tabOverview / tabRounds / tabPeople / tabBrief`.
 - AI prompts: `buildBrief / prepPrompt / introPrompt / researchPrompt`, plus `resumeText()`.
 - `EDITORS` — `openEditor()` modal; `opForm / roundForm / personForm`; `openSettings / openResume / openStageEditor`.
@@ -41,6 +45,8 @@ excitement(1-5), compMin/compMax/compNotes, appliedDate, jobUrl, jd, jdFile, nex
 nextMeetingLink, tags[], product, vibes, notes, offer{}, rounds[], people[], createdAt, updatedAt }`.
 `rounds[]`: `{id,name,type,date,time,link,interviewers,prep,debrief,rating,status}`.
 `people[]`: `{id,name,title,linkedin,email,notes}`.
+`state.scorecard` (offer-comparison): `{ criteria:[{id,name,weight}], scores:{ [opId]:{ [critId]: 1-5 } } }`.
+Criteria/weights are global; ratings are per-offer. Lazily created — don't hand-init it.
 **Every record must have an `id`** — `migrate()` backfills missing ids on load; this is what makes
 edit/delete work. Don't create rounds/people without ids.
 
@@ -75,7 +81,6 @@ localStorage per device. **No Supabase keys or sync codes belong in this repo.**
 lives in `index.html` as the `SYNC_SQL` constant (and in the in-app Settings panel).
 
 ## Backlog / ideas not yet built
-- Offer-comparison scorecard (weighted decision matrix across competing offers).
 - Thank-you-note tracker / reminders per round.
 - "Questions they asked me" / "questions to ask" reusable libraries.
 - Service worker for true offline of the web/PWA version (Capacitor build is already offline).

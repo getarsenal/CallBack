@@ -607,6 +607,9 @@ function renderDashboard(){
     ${stat(followups.length, followups.length===1?"Needs a nudge":"Need a nudge","Quiet 7+ days",I.bell, followups.length?"hot":"","nudge")}
   </div>`;
 
+  // Compare competing offers (only surfaces once ≥2 offers are in play)
+  html+=scorecardTeaser();
+
   // This week + follow-ups
   html+=`<div class="grid grid-2" style="margin-top:18px">`;
   html+=`<div class="card panel"><div class="panel-title">${I.clock} Coming up</div>`;
@@ -798,7 +801,8 @@ function renderInsights(){
   ops.forEach(o=>{ const s=o.source||"Unknown"; bySource[s]=bySource[s]||{total:0,advanced:0,offers:0}; bySource[s].total++; if(["hm","technical","onsite","offer"].includes(o.status))bySource[s].advanced++; if(o.status==="offer")bySource[s].offers++; });
   const srcRows=Object.entries(bySource).sort((a,b)=>b[1].total-a[1].total);
 
-  let html=`<div class="grid chart-grid">`;
+  let html=scorecardTeaser();
+  html+=`<div class="grid chart-grid">`;
   // status distribution
   html+=`<div class="card panel"><div class="panel-title">${I.board} Where everything stands</div>${funnelChart()}</div>`;
   // source donut
@@ -848,6 +852,162 @@ function donut(data){
   }).join("");
   const legend=data.sort((a,b)=>b.value-a.value).map((d,i)=>`<div class="legend-row"><span class="dot" style="background:${colorFor(d.label+data.indexOf(d))}"></span><span>${esc(d.label)}</span><span class="v">${d.value}</span></div>`).join("");
   return `<div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap"><svg viewBox="0 0 140 140" width="140" height="140" style="flex:0 0 140px">${segs}<text x="70" y="66" text-anchor="middle" fill="#e7ecf6" font-size="26" font-weight="800">${total}</text><text x="70" y="84" text-anchor="middle" fill="#6b7795" font-size="11" font-weight="700">total</text></svg><div class="legend" style="flex:1;min-width:140px">${legend}</div></div>`;
+}
+
+/* ============================ OFFER SCORECARD ============================ */
+// A weighted decision matrix across competing offers. Criteria + weights are global
+// (state.scorecard.criteria); per-offer ratings live in state.scorecard.scores[opId][critId].
+// Lazily initialised so it only persists once the user actually touches it.
+function defaultCriteria(){ return [
+  {id:"c_comp",    name:"Compensation",      weight:25},
+  {id:"c_growth",  name:"Role & growth",     weight:20},
+  {id:"c_team",    name:"Team & manager",    weight:15},
+  {id:"c_culture", name:"Culture & values",  weight:15},
+  {id:"c_wlb",     name:"Work–life balance", weight:15},
+  {id:"c_mission", name:"Mission & product", weight:10},
+]; }
+function getScorecard(){
+  if(!state.scorecard || typeof state.scorecard!=="object") state.scorecard={};
+  if(!Array.isArray(state.scorecard.criteria) || !state.scorecard.criteria.length) state.scorecard.criteria=defaultCriteria();
+  if(!state.scorecard.scores || typeof state.scorecard.scores!=="object") state.scorecard.scores={};
+  return state.scorecard;
+}
+function scOffers(){ return state.opportunities.filter(o=>o.status==="offer"); }
+function scScore(opId, critId){ return ((getScorecard().scores[opId])||{})[critId]||0; }
+function scSet(opId, critId, v){ const sc=getScorecard(); (sc.scores[opId]=sc.scores[opId]||{})[critId]=v; }
+// weighted average on a 1-5 scale across the criteria that have actually been rated
+function scResult(o){
+  const sc=getScorecard(); let wsum=0, sum=0, rated=0;
+  sc.criteria.forEach(c=>{ const r=scScore(o.id,c.id), w=Math.max(0,+c.weight||0); if(r>0){ wsum+=w; sum+=w*r; rated++; } });
+  return { avg: wsum? sum/wsum : 0, rated, total: sc.criteria.length };
+}
+
+// Gradient call-to-action shown on Dashboard & Insights once ≥2 offers are in play.
+function scorecardTeaser(){
+  const offers=scOffers(); if(offers.length<2) return "";
+  const top=offers.map(o=>({o,r:scResult(o)})).sort((a,b)=>b.r.avg-a.r.avg)[0];
+  const lead = top.r.avg ? `<b style="color:var(--accent3)">${esc(top.o.company)}</b> is ahead at ${top.r.avg.toFixed(1)}/5` : `Score them on what actually matters to you`;
+  return `<div class="ai-box" data-act="open-scorecard" role="button" tabindex="0" style="cursor:pointer">
+    <div class="ai-head">${I.trophy} ${offers.length} offers on the table — compare them side by side</div>
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px">A weighted decision matrix scores every offer on the things you care about, so the right call gets obvious. ${lead}.</div>
+    <button class="btn primary sm" data-act="open-scorecard">${I.spark} Open offer scorecard</button>
+  </div>`;
+}
+
+function openScorecard(){
+  openEditor(scorecardBody());
+  // don't let the auto-focused criteria input scroll past the verdict
+  const card=editorEl&&editorEl.querySelector(".card");
+  if(card) setTimeout(()=>{ if(document.activeElement&&card.contains(document.activeElement)) document.activeElement.blur(); card.scrollTop=0; },60);
+}
+function scReRender(){ const card=editorEl&&editorEl.querySelector(".card"); if(!card) return; const y=card.scrollTop; card.innerHTML=scorecardBody(); card.scrollTop=y; }
+function scResultsInner(ranked){
+  return ranked.map((x,i)=>{
+    const win = i===0 && x.r.avg>0;
+    const w = x.r.avg? Math.max(x.r.avg/5*100,6) : 0;
+    return `<div class="bar-row"><div class="nm">${win?"🏆 ":""}${esc(x.o.company)}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${w}%;background:${win?'var(--grad)':'var(--accent)'}">${x.r.avg?x.r.avg.toFixed(1):""}</div></div>
+      <div style="width:66px;font-size:11.5px;color:var(--faint);text-align:right">${x.r.rated?x.r.rated+"/"+x.r.total+" scored":"unscored"}</div></div>`;
+  }).join("");
+}
+function scorecardBody(){
+  const sc=getScorecard(), offers=scOffers();
+  const totW=sc.criteria.reduce((s,c)=>s+Math.max(0,+c.weight||0),0)||1;
+
+  let h=`<div style="display:flex;align-items:center;gap:11px;margin-bottom:6px">
+    <div style="width:36px;height:36px;border-radius:11px;background:var(--grad);display:grid;place-items:center">${I.trophy}</div>
+    <div><h2 style="margin:0;font-size:18px;font-weight:850">Offer scorecard</h2><div style="font-size:12.5px;color:var(--faint)">Weighted decision matrix</div></div>
+    <button class="x-btn" data-act="cancel-editor" style="margin-left:auto">${I.x}</button>
+  </div>`;
+
+  if(!offers.length){
+    h+=`<div class="note-block" style="margin-top:14px">No offers to compare yet. When a role moves to the <b>Offer</b> stage it shows up here automatically. You can still tune your criteria &amp; weights below so you're ready.</div>`;
+  } else {
+    const ranked=offers.map(o=>({o,r:scResult(o)})).sort((a,b)=>b.r.avg-a.r.avg);
+    h+=`<div class="section-head"><h3>The verdict</h3><div class="line"></div></div>`;
+    h+=`<div class="card panel" id="scResults">`+scResultsInner(ranked)+`</div>`;
+  }
+
+  // criteria + weights
+  h+=`<div class="section-head"><h3>What matters to you</h3><div class="line"></div></div>`;
+  h+=`<div class="card panel"><div style="font-size:12px;color:var(--faint);margin-bottom:12px">How much each factor weighs in your decision. Weights are relative — they don't need to add up to 100.</div>`;
+  h+=sc.criteria.map(c=>{
+    const pct=Math.round(Math.max(0,+c.weight||0)/totW*100);
+    return `<div class="sub-item" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:9px">
+      <input value="${esc(c.name)}" data-sc-critname="${c.id}" maxlength="28" style="flex:1"/>
+      <input type="number" min="0" max="100" value="${esc(c.weight)}" data-sc-weight="${c.id}" style="width:60px;text-align:center" title="Weight"/>
+      <span style="font-size:11px;color:var(--faint);width:32px;text-align:right" data-sc-pct="${c.id}">${pct}%</span>
+      <button class="x-btn danger" data-sc-delcrit="${c.id}" ${sc.criteria.length<=1?'style="opacity:.3;pointer-events:none"':''} title="Remove">${I.trash}</button>
+    </div>`;
+  }).join("");
+  h+=`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+    <button class="btn ghost sm" data-act="sc-addcrit">+ Add factor</button>
+    <button class="btn ghost sm" data-act="sc-reset">↻ Reset to defaults</button>
+  </div></div>`;
+
+  // per-offer scoring (vertical cards — no horizontal scroll on mobile)
+  if(offers.length){
+    h+=`<div class="section-head"><h3>Score each offer</h3><div class="line"></div></div>`;
+    h+=offers.map(o=>{
+      const r=scResult(o);
+      const comp = (o.offer&&o.offer.base)? esc(o.offer.base)
+        : (o.compMin||o.compMax)? (fmtMoney(o.compMin||o.compMax)+((o.compMin&&o.compMax&&o.compMin!=o.compMax)?"–"+fmtMoney(o.compMax):"")) : "";
+      return `<div class="card panel" style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+          ${favHTML(o)}
+          <div style="min-width:0"><div style="font-weight:800">${esc(o.company)}</div><div style="font-size:12px;color:var(--muted)">${esc(o.role||"")}${comp?` · ${comp}`:""}</div></div>
+          <span class="chip tag-chip" style="margin-left:auto">${r.avg?r.avg.toFixed(1)+" /5":"—"}</span>
+        </div>`+
+        sc.criteria.map(c=>{
+          const v=scScore(o.id,c.id);
+          return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:7px">
+            <div style="flex:1;font-size:12.5px;color:var(--muted)">${esc(c.name)}</div>
+            <div class="rating-pick">${[1,2,3,4,5].map(n=>`<span class="s ${v>=n?'on':''}" data-sc-rate="${o.id}|${c.id}|${n}">★</span>`).join("")}</div>
+          </div>`;
+        }).join("")
+      +`</div>`;
+    }).join("");
+
+    h+=`<button class="btn primary" style="width:100%;margin-top:2px" data-act="sc-copy">${I.ai} Copy AI decision brief</button>
+    <div style="font-size:11.5px;color:var(--faint);margin-top:8px;text-align:center">Paste into any AI to pressure-test your scores and get a recommendation.</div>`;
+  }
+  return h;
+}
+// live-update the verdict bars / weight %s without rebuilding inputs (keeps text focus)
+function refreshScResults(){ const box=$("#scResults"); if(!box) return;
+  box.innerHTML=scResultsInner(scOffers().map(o=>({o,r:scResult(o)})).sort((a,b)=>b.r.avg-a.r.avg)); }
+function refreshScPcts(){ const sc=getScorecard(), totW=sc.criteria.reduce((s,c)=>s+Math.max(0,+c.weight||0),0)||1;
+  sc.criteria.forEach(c=>{ const e=document.querySelector(`[data-sc-pct="${c.id}"]`); if(e) e.textContent=Math.round(Math.max(0,+c.weight||0)/totW*100)+"%"; }); }
+let scSaveTimer=null;
+function scSaveSoon(){ clearTimeout(scSaveTimer); scSaveTimer=setTimeout(save,400); }
+
+function scorecardPrompt(){
+  const sc=getScorecard(), offers=scOffers();
+  const totW=sc.criteria.reduce((s,c)=>s+Math.max(0,+c.weight||0),0)||1;
+  const L=[];
+  L.push(`I'm choosing between ${offers.length} job offer${offers.length>1?"s":""}. Below is my weighted decision scorecard — my priorities (with weights) and how I've rated each offer 1–5 on every factor. Please pressure-test my scoring, flag blind spots or things I should ask about, weigh the trade-offs, and give me a clear recommendation with your reasoning.`);
+  L.push("");
+  L.push(`## My priorities (weight = how much it matters)`);
+  sc.criteria.forEach(c=>L.push(`- ${c.name}: ${Math.round(Math.max(0,+c.weight||0)/totW*100)}%`));
+  L.push("");
+  offers.map(o=>({o,r:scResult(o)})).sort((a,b)=>b.r.avg-a.r.avg).forEach(({o,r})=>{
+    L.push(`## ${o.company}${o.role?" — "+o.role:""}  (my weighted score: ${r.avg?r.avg.toFixed(1)+"/5":"unscored"})`);
+    sc.criteria.forEach(c=>{ const v=scScore(o.id,c.id); L.push(`- ${c.name}: ${v?v+"/5":"—"}`); });
+    const det=[];
+    if(o.offer&&o.offer.base) det.push(`base ${o.offer.base}`);
+    if(o.offer&&o.offer.bonus) det.push(`bonus ${o.offer.bonus}`);
+    if(o.offer&&o.offer.equity) det.push(`equity ${o.offer.equity}`);
+    if(!det.length && (o.compMin||o.compMax)) det.push(`comp ${[o.compMin,o.compMax].filter(Boolean).join("–")}`);
+    if(o.location) det.push(o.location);
+    if(o.workMode) det.push(o.workMode);
+    if(det.length) L.push(`- Details: ${det.join(", ")}`);
+    if(o.offer&&o.offer.deadline) L.push(`- Decision deadline: ${fmtDate(o.offer.deadline)}`);
+    if(o.offer&&o.offer.notes) L.push(`- Offer notes: ${o.offer.notes}`);
+    if(o.vibes) L.push(`- My read on them: ${o.vibes}`);
+    L.push("");
+  });
+  L.push(`Which would you choose, and what am I underweighting or missing?`);
+  return L.join("\n");
 }
 
 /* ============================ DRAWER: DETAIL ============================ */
@@ -1237,7 +1397,7 @@ function personForm(p){
 
 /* ============================ EVENT WIRING ============================ */
 document.addEventListener("click",e=>{
-  const t=e.target.closest("[data-view],[data-act],[data-open],[data-sort],[data-tab],[data-rating] .s,[data-del-round],[data-edit-round],[data-del-person],[data-edit-person],[data-research],[data-copy],[data-stageadd],[data-stagedel],[data-stagemove],[data-tile],[data-pickfile],[data-clearfile],[data-ics],[data-gcal],[data-dljd]");
+  const t=e.target.closest("[data-view],[data-act],[data-open],[data-sort],[data-tab],[data-rating] .s,[data-del-round],[data-edit-round],[data-del-person],[data-edit-person],[data-research],[data-copy],[data-stageadd],[data-stagedel],[data-stagemove],[data-tile],[data-pickfile],[data-clearfile],[data-ics],[data-gcal],[data-dljd],[data-sc-rate],[data-sc-delcrit]");
   if(!t) return;
 
   // nav
@@ -1266,6 +1426,13 @@ document.addEventListener("click",e=>{
   if(act==="sample"){ loadSample(); return; }
   if(act==="settings"){ openSettings(); return; }
   if(act==="edit-stages"){ openStageEditor(); return; }
+  // offer scorecard
+  if(act==="open-scorecard"){ openScorecard(); return; }
+  if(act==="sc-addcrit"){ getScorecard().criteria.push({id:"c_"+uid(),name:"New factor",weight:10}); save(); scReRender(); return; }
+  if(act==="sc-reset"){ if(confirm("Reset criteria & weights to the defaults? Your per-offer scores are kept.")){ getScorecard().criteria=defaultCriteria(); save(); scReRender(); } return; }
+  if(act==="sc-copy"){ copy(scorecardPrompt(),"Decision brief copied — paste into any AI"); return; }
+  if(t.dataset.scRate){ const [oid,cid,v]=t.dataset.scRate.split("|"); scSet(oid,cid, scScore(oid,cid)===+v?0:+v); save(); scReRender(); return; }
+  if(t.dataset.scDelcrit){ const sc=getScorecard(); sc.criteria=sc.criteria.filter(c=>c.id!==t.dataset.scDelcrit); save(); scReRender(); return; }
   if(act==="stage-save"){ saveStages(); return; }
   if(t.hasAttribute("data-stageadd")){ syncStageDraft(); stageDraft.push({id:"stg_"+uid(),name:"New stage",color:"#6366f1",active:true}); renderStageEditor(); return; }
   if(t.dataset.stagedel!=null){ syncStageDraft(); stageDraft.splice(+t.dataset.stagedel,1); renderStageEditor(); return; }
@@ -1310,6 +1477,13 @@ $("#overlay").addEventListener("click",closeDrawer);
 document.addEventListener("change",e=>{
   if(e.target.id==="stageSel"){ const o=getOp(); o.status=e.target.value; o.updatedAt=Date.now(); save(); renderDrawer(); render(); }
   if(e.target.id==="fileInput"){ importFile(e.target.files[0]); e.target.value=""; }
+});
+
+// scorecard criteria name/weight — update live without rebuilding inputs (keeps text focus)
+document.addEventListener("input",e=>{
+  const d=e.target.dataset||{};
+  if(d.scCritname!=null){ const c=getScorecard().criteria.find(c=>c.id===d.scCritname); if(c){ c.name=e.target.value; scSaveSoon(); } }
+  else if(d.scWeight!=null){ const c=getScorecard().criteria.find(c=>c.id===d.scWeight); if(c){ c.weight=Math.max(0,+e.target.value||0); refreshScResults(); refreshScPcts(); scSaveSoon(); } }
 });
 
 // form submits
