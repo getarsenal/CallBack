@@ -21,5 +21,13 @@ mobile for an app-like, full-screen experience.
 - **AI Brief** — copy a ready-to-paste brief / "prep me" / "write my intro" prompt for any
   role, plus per-interviewer research prompts
 
+## Cloud sync
+Settings (⚙) → **Cloud sync** connects the app to a free Supabase project so your phone and
+computer stay in sync via a private sync code. Optional — local-only by default.
+
 ## Backup
-Sidebar → **Backup / Export** saves a JSON snapshot. Import it on any device to restore.
+Settings (⚙) → **Export backup** saves a JSON snapshot. Import it on any device to restore.
+
+## iOS App Store
+See [APP_STORE.md](APP_STORE.md) for the Capacitor packaging + submission runbook.
+[privacy.html](privacy.html) is the hostable privacy policy required by App Store Connect.
