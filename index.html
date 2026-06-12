@@ -261,6 +261,11 @@ tbody td{padding:12px 14px;vertical-align:middle}
 .sub-item .si-meta{color:var(--muted);font-size:12px;display:flex;gap:12px;flex-wrap:wrap}
 .add-sub{width:100%;padding:11px;border:1.5px dashed var(--line2);border-radius:12px;color:var(--muted);font-weight:700;font-size:13px;transition:.15s}
 .add-sub:hover{border-color:var(--accent);color:var(--accent3);background:rgba(99,102,241,.06)}
+.tab-empty{text-align:center;padding:30px 18px 24px}
+.tab-empty .te-ico{width:48px;height:48px;border-radius:14px;background:rgba(99,102,241,.12);display:grid;place-items:center;margin:0 auto 13px;color:var(--accent3)}
+.tab-empty .te-ico svg{width:23px;height:23px}
+.tab-empty .te-title{font-weight:800;font-size:15px;margin-bottom:5px}
+.tab-empty .te-sub{font-size:12.5px;color:var(--faint);max-width:290px;margin:0 auto;line-height:1.55}
 
 .ai-box{background:linear-gradient(160deg,rgba(99,102,241,.1),rgba(34,211,238,.06));border:1px solid rgba(99,102,241,.3);border-radius:14px;padding:16px;margin-bottom:14px}
 .ai-box .ai-head{display:flex;align-items:center;gap:9px;margin-bottom:10px;font-weight:800;font-size:13.5px}
@@ -1203,9 +1208,18 @@ function tabOverview(o){
   return h;
 }
 
+function tabEmpty(icon,title,sub){
+  return `<div class="tab-empty">
+    <div class="te-ico">${icon}</div>
+    <div class="te-title">${title}</div>
+    <div class="te-sub">${sub}</div>
+  </div>`;
+}
 function tabRounds(o){
   let h="";
-  (o.rounds||[]).slice().sort((a,b)=>(a.date||"").localeCompare(b.date||"")).forEach(r=>{
+  const rounds=(o.rounds||[]).slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
+  if(!rounds.length) h+=tabEmpty(I.cal,"No interview rounds yet","Log each call or interview — date, who you're meeting, prep notes and how it went. You can add any round straight to your calendar.");
+  rounds.forEach(r=>{
     const du=daysUntil(r.date);
     h+=`<div class="sub-item">
       <div class="si-head"><span class="nm">${esc(r.name||r.type||"Round")}</span>
@@ -1226,8 +1240,11 @@ function tabRounds(o){
 }
 
 function tabPeople(o){
-  let h=`<div style="font-size:12.5px;color:var(--faint);margin-bottom:12px">Everyone you're meeting. Save their LinkedIn, then tap <b>Research prompt</b> to get a ready-to-paste AI brief on them.</div>`;
-  (o.people||[]).forEach(p=>{
+  const people=o.people||[];
+  let h = people.length
+    ? `<div style="font-size:12.5px;color:var(--faint);margin-bottom:12px">Everyone you're meeting. Save their LinkedIn, then tap <b>Research prompt</b> to get a ready-to-paste AI brief on them.</div>`
+    : tabEmpty(I.user,"No contacts yet","Save the people you're meeting — recruiters, hiring managers, panelists. Add a LinkedIn and generate a one-tap research brief on each.");
+  people.forEach(p=>{
     h+=`<div class="sub-item">
       <div class="si-head"><div style="display:flex;align-items:center;gap:10px"><div class="fav" style="background:${colorFor(p.name)};width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:12px;font-weight:800;color:#fff">${esc(initials(p.name))}</div><div><div class="nm">${esc(p.name)}</div><div style="font-size:12px;color:var(--muted)">${esc(p.title||"")}</div></div></div>
         <button class="del" data-del-person="${p.id}">${I.trash}</button></div>
