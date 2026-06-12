@@ -482,7 +482,7 @@ function migrate(s){
 }
 function persist(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){ toast("⚠ Couldn't save — storage full?"); } }
 // save() = a real user change: bump revision, persist, and push to cloud
-function save(){ state.rev = Date.now(); persist(); schedulePush(); }
+function save(){ state.rev = Date.now(); persist(); schedulePush(); if(typeof scheduleRemindersSoon==="function") scheduleRemindersSoon(); }
 
 /* ============================ CLOUD SYNC (Supabase) ============================ */
 const SYNC_KEY = "callback_sync_cfg_v1";
@@ -1350,7 +1350,7 @@ function tabPeople(o){
     : tabEmpty(I.user,"No contacts yet","Save the people you're meeting — recruiters, hiring managers, panelists. Add a LinkedIn and generate a one-tap research brief on each.");
   people.forEach(p=>{
     h+=`<div class="sub-item">
-      <div class="si-head"><div style="display:flex;align-items:center;gap:10px"><div class="fav" style="background:${colorFor(p.name)};width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:12px;font-weight:800;color:#fff">${esc(initials(p.name))}</div><div><div class="nm">${esc(p.name)}</div><div style="font-size:12px;color:var(--muted)">${esc(p.title||"")}</div></div></div>
+      <div class="si-head"><div style="display:flex;align-items:center;gap:10px"><div class="fav" style="background:${colorFor(p.name)};width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:12px;font-weight:800;color:#fff;overflow:hidden">${p.photo?`<img src="${esc(p.photo)}" style="width:100%;height:100%;object-fit:cover" alt=""/>`:esc(initials(p.name))}</div><div><div class="nm">${esc(p.name)}</div><div style="font-size:12px;color:var(--muted)">${esc(p.title||"")}</div></div></div>
         <button class="del" data-del-person="${p.id}">${I.trash}</button></div>
       ${p.notes?`<div class="note-block" style="margin-top:8px">${esc(p.notes)}</div>`:""}
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:9px">
@@ -1497,7 +1497,14 @@ function openSettings(){
     <button class="btn ghost sm" data-act="import">↑ Import backup</button>
     <button class="btn ghost sm" data-act="sample">${I.spark} Load demo data</button>
   </div>
-  <div style="font-size:11.5px;color:var(--faint);margin-top:10px">Tip: even with cloud sync on, an occasional exported backup is a good safety net.</div>`;
+  <div style="font-size:11.5px;color:var(--faint);margin-top:10px">Tip: even with cloud sync on, an occasional exported backup is a good safety net.</div>
+
+  <div class="section-head"><h3>On your iPhone</h3><div class="line"></div></div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <button class="btn ghost sm" data-act="scan-calendar">${I.cal} Scan calendar</button>
+    <button class="btn ghost sm" data-act="enable-reminders">${I.bell} ${aiCfg.reminders?"Reminders on ✓":"Turn on reminders"}</button>
+  </div>
+  <div style="font-size:11.5px;color:var(--faint);margin-top:10px">Calendar scan, reminders, Contacts, and sharing emails/profiles into Callback work in the App Store build. On the web they'll let you know.</div>`;
   openEditor(body);
   updateSyncUI();
 }
@@ -1633,10 +1640,12 @@ function personForm(p){
   p=p||{};
   return `<h2 style="margin:0 0 18px;font-size:18px;font-weight:850">${p.id?"Edit person":"Add interviewer / contact"}</h2>
   <form id="personForm">
+    <input type="hidden" name="photo" value="${esc(p.photo||"")}"/>
     <div class="form-2">
       <div class="form-row"><label>Name *</label><input name="name" value="${esc(p.name||"")}" required placeholder="Sam Rivera"/></div>
       <div class="form-row"><label>Title / role</label><input name="title" value="${esc(p.title||"")}" placeholder="Eng Manager"/></div>
     </div>
+    <button type="button" class="btn ghost sm" data-act="pull-contact" style="margin-bottom:12px">${I.user} Pull from Contacts (iPhone)</button>
     <div class="form-row"><label>LinkedIn URL</label><input name="linkedin" value="${esc(p.linkedin||"")}" placeholder="https://linkedin.com/in/…"/></div>
     <div class="form-row"><label>Email</label><input name="email" value="${esc(p.email||"")}" placeholder="sam@acme.com"/></div>
     <div class="form-row"><label>Notes — what you know about them</label><textarea name="notes" placeholder="Background, what they care about, common ground…">${esc(p.notes||"")}</textarea></div>
@@ -1731,7 +1740,8 @@ function smartPasteBody(){
   <div style="display:flex;gap:10px;margin-top:12px">
     <button class="btn primary" style="flex:1" data-act="ai-extract">${I.ai} Extract</button>
     <button class="btn ghost" data-act="cancel-editor">Cancel</button>
-  </div>`;
+  </div>
+  <div style="font-size:11.5px;color:var(--faint);margin-top:10px;text-align:center">On iPhone you can also <span data-act="scan-calendar" style="color:var(--accent3);cursor:pointer;font-weight:700">scan your calendar</span> or share an email/profile straight into Callback.</div>`;
 }
 function spSetBody(html){ const card=editorEl&&editorEl.querySelector(".card"); if(card){ card.innerHTML=html; const f=card.querySelector("textarea,input"); if(f) setTimeout(()=>f.focus(),40); } }
 async function runExtract(){
@@ -1857,6 +1867,109 @@ function saveAISettings(){
   saveAICfg(); closeEditor(); openSmartPaste();
 }
 
+/* ============================ NATIVE (Capacitor iOS) ============================ */
+// Everything here is guarded by isNative() so the web/PWA build is unaffected. Plugins are
+// reached through the Capacitor bridge global (window.Capacitor.Plugins.*) — no bundler needed.
+// Setup + the iOS Share Extension live in NATIVE.md. Calls are defensive: a missing/renamed
+// plugin surfaces a toast, never a crash.
+const APP_GROUP="group.com.scheidelholdings.callback";
+function cap(){ return (typeof window!=="undefined") && window.Capacitor; }
+function isNative(){ const c=cap(); return !!(c && c.isNativePlatform && c.isNativePlatform()); }
+function plugin(){ const c=cap(); if(!c||!c.Plugins) return null; for(const n of arguments){ if(c.Plugins[n]) return c.Plugins[n]; } return null; }
+
+function initNative(){
+  if(!isNative()) return;
+  try{ initShareIntake(); }catch(e){}
+  scheduleRemindersSoon();
+}
+
+/* ---- Share-into-app: a recruiter email / LinkedIn profile shared into Callback ---- */
+function handleSharedText(text){ if(!text||!String(text).trim()) return; spText=String(text); openSmartPaste(); }
+async function initShareIntake(){
+  const App=plugin("App");
+  if(App && App.addListener){
+    App.addListener("appUrlOpen", (d)=>{ try{ const u=new URL(d.url); const t=u.searchParams.get("text")||u.searchParams.get("url")||""; if(t) handleSharedText(decodeURIComponent(t)); }catch(e){} });
+    App.addListener("resume", ()=>{ checkSharedInbox(); });
+  }
+  const Prefs=plugin("Preferences");
+  if(Prefs && Prefs.configure){ try{ await Prefs.configure({group:APP_GROUP}); }catch(e){} }
+  checkSharedInbox();
+}
+async function checkSharedInbox(){
+  const Prefs=plugin("Preferences"); if(!Prefs) return;
+  try{ const {value}=await Prefs.get({key:"shared_intake"}); if(value){ await Prefs.remove({key:"shared_intake"}); handleSharedText(value); } }catch(e){}
+}
+
+/* ---- Local-notification reminders for rounds / next steps / offer deadlines ---- */
+function remAt(d,t,offMin){ const [y,m,dd]=String(d).split("-").map(Number); let [hh,mm]=String(t||"09:00").split(":").map(Number); const dt=new Date(y,(m||1)-1,dd||1,hh||9,mm||0); return dt.getTime()+(offMin||0)*60000; }
+let remTimer=null;
+function scheduleRemindersSoon(){ if(!isNative()||!aiCfg.reminders) return; clearTimeout(remTimer); remTimer=setTimeout(syncReminders,1500); }
+async function syncReminders(){
+  if(!isNative()||!aiCfg.reminders) return;
+  const LN=plugin("LocalNotifications"); if(!LN) return;
+  try{
+    const perm = LN.checkPermissions? await LN.checkPermissions() : {display:"granted"};
+    if(perm.display!=="granted") return;
+    try{ const pend=await LN.getPending(); if(pend&&pend.notifications&&pend.notifications.length) await LN.cancel({notifications:pend.notifications.map(n=>({id:n.id}))}); }catch(e){}
+    const notes=[]; let id=1; const now=Date.now();
+    state.opportunities.forEach(o=>{
+      (o.rounds||[]).forEach(r=>{ if(r.date && r.status!=="done" && r.status!=="cancelled"){ const at=remAt(r.date,r.time,r.time?-60:0); if(at>now) notes.push({id:id++,title:`${o.company} — ${r.name||r.type||"interview"}`,body:r.time?`Starts at ${r.time}`:"Today",schedule:{at:new Date(at)}}); } });
+      if(o.nextActionDate){ const at=remAt(o.nextActionDate,"09:00",0); if(at>now) notes.push({id:id++,title:`${o.company}: ${o.nextActionLabel||"Next step"}`,body:"Due today",schedule:{at:new Date(at)}}); }
+      if(o.offer&&o.offer.deadline){ const at=remAt(o.offer.deadline,"09:00",0); if(at>now) notes.push({id:id++,title:`${o.company}: offer decision`,body:"Decision deadline today",schedule:{at:new Date(at)}}); }
+    });
+    if(notes.length) await LN.schedule({notifications:notes.slice(0,60)});
+  }catch(e){}
+}
+async function enableReminders(){
+  if(!isNative()){ toast("Reminders are available in the iOS app"); return; }
+  const LN=plugin("LocalNotifications"); if(!LN){ toast("Install @capacitor/local-notifications"); return; }
+  try{ const p=await LN.requestPermissions(); if(p.display!=="granted"){ toast("Notifications not allowed"); return; }
+    aiCfg.reminders=true; saveAICfg(); await syncReminders(); toast("Reminders on ✓"); }catch(e){ toast("⚠ "+e.message); }
+}
+
+/* ---- On-device calendar scan → Smart add ---- */
+function looksLikeInterview(e){ const s=((e.title||"")+" "+(e.notes||"")).toLowerCase(); return /interview|screen(ing)?|onsite|on-site|recruiter|phone screen|hiring|hr call|technical|panel|final round/.test(s); }
+async function scanCalendar(){
+  if(!isNative()){ toast("Calendar scan is available in the iOS app"); return; }
+  const Cal=plugin("CapacitorCalendar","Calendar"); if(!Cal){ toast("Install @ebarooni/capacitor-calendar"); return; }
+  try{
+    try{ if(Cal.requestFullCalendarAccess) await Cal.requestFullCalendarAccess(); else if(Cal.requestPermissions) await Cal.requestPermissions(); }catch(e){}
+    const from=Date.now(), to=from+1000*60*60*24*30; let res;
+    if(Cal.listEventsInRange) res=await Cal.listEventsInRange({from,to});
+    else if(Cal.getEvents) res=await Cal.getEvents({startDate:from,endDate:to});
+    else throw new Error("calendar API not recognized");
+    const list=(res.result||res.events||res.data||[]).map(e=>({title:e.title||e.summary||"",notes:e.notes||e.description||"",location:e.location||"",start:e.startDate||e.start||e.eventStartDate}));
+    const hits=list.filter(looksLikeInterview);
+    if(!hits.length){ toast("No interview-like events in the next 30 days"); return; }
+    spText=hits.map(e=>`${e.title}\n${e.notes}\n${e.location}\n${e.start?new Date(e.start).toString():""}`).join("\n--- next event ---\n");
+    openSmartPaste();
+  }catch(e){ toast("⚠ Calendar: "+e.message); }
+}
+
+/* ---- Pull a contact's details + photo into the open person form ---- */
+async function pullContactInto(){
+  if(!isNative()){ toast("Contacts is available in the iOS app"); return; }
+  const C=plugin("Contacts","CapacitorContacts"); if(!C){ toast("Install @capacitor-community/contacts"); return; }
+  const nameInp=document.querySelector('#personForm [name="name"]'); const q=(nameInp?nameInp.value:"").trim();
+  if(!q){ toast("Type a name first"); return; }
+  try{
+    if(C.requestPermissions) await C.requestPermissions();
+    const res=await C.getContacts({projection:{name:true,emails:true,urls:true,image:true,organization:true}});
+    const list=res.contacts||res.result||[];
+    const disp=c=>(c.name&&(c.name.display||c.displayName))||c.displayName||"";
+    const hit=list.find(c=>disp(c).toLowerCase().includes(q.toLowerCase()));
+    if(!hit){ toast("No matching contact"); return; }
+    const set=(n,v)=>{ const el=document.querySelector(`#personForm [name="${n}"]`); if(el&&v&&!el.value) el.value=v; };
+    set("name",disp(hit));
+    set("email",(hit.emails&&hit.emails[0]&&(hit.emails[0].address||hit.emails[0].value))||"");
+    set("title",(hit.organization&&(hit.organization.company||hit.organization.jobTitle))||"");
+    set("linkedin",(hit.urls&&hit.urls[0]&&(hit.urls[0].url||hit.urls[0].value))||"");
+    const img=(hit.image&&(hit.image.base64String||hit.image.base64))||hit.photoThumbnail||"";
+    if(img){ const ph=document.querySelector('#personForm [name="photo"]'); if(ph) ph.value=img.startsWith("data:")?img:("data:image/jpeg;base64,"+img); }
+    toast("Pulled from Contacts ✓");
+  }catch(e){ toast("⚠ Contacts: "+e.message); }
+}
+
 /* ============================ EVENT WIRING ============================ */
 document.addEventListener("click",e=>{
   const t=e.target.closest("[data-view],[data-act],[data-open],[data-sort],[data-tab],[data-rating] .s,[data-del-round],[data-edit-round],[data-del-person],[data-edit-person],[data-research],[data-copy],[data-stageadd],[data-stagedel],[data-stagemove],[data-tile],[data-pickfile],[data-clearfile],[data-ics],[data-gcal],[data-dljd],[data-sc-rate],[data-sc-delcrit],[data-calmode],[data-calnav],[data-calday]");
@@ -1906,6 +2019,10 @@ document.addEventListener("click",e=>{
   if(act==="ai-save"){ spApply(); return; }
   if(act==="ai-settings"){ openAISettings(); return; }
   if(act==="ai-cfg-save"){ saveAISettings(); return; }
+  // native (iOS) actions — degrade to a hint on web
+  if(act==="scan-calendar"){ scanCalendar(); return; }
+  if(act==="enable-reminders"){ enableReminders(); return; }
+  if(act==="pull-contact"){ pullContactInto(); return; }
   if(act==="open-scorecard"){ openScorecard(); return; }
   if(act==="sc-addcrit"){ getScorecard().criteria.push({id:"c_"+uid(),name:"New factor",weight:10}); save(); scReRender(); return; }
   if(act==="sc-reset"){ if(confirm("Reset criteria & weights to the defaults? Your per-offer scores are kept.")){ getScorecard().criteria=defaultCriteria(); save(); scReRender(); } return; }
@@ -2181,6 +2298,7 @@ try{
 
 render();
 initSync();
+initNative();
 let wasMobile=isMobile();
 window.addEventListener("resize",()=>{ const m=isMobile(); if(m!==wasMobile){ wasMobile=m; render(); } });
 </script>

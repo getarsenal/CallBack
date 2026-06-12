@@ -7,6 +7,11 @@
   },
   "ios": {
     "contentInset": "always",
-    "backgroundColor": "#0b0f1a"
+    "backgroundColor": "#0a0b0e"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "iconColor": "#5e6ad2"
+    }
   }
 }

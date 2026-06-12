@@ -18,7 +18,9 @@ you paste into a new AI chat to prep for interviews.
 - `privacy.html` — privacy policy for the App Store submission (hostable page).
 - `supabase/functions/ai/index.ts` — optional Edge Function proxy for Smart add (holds the
   model key server-side). `supabase/README.md` has the deploy runbook. No keys in the repo.
+- `package.json` — exists ONLY for the Capacitor iOS build (web app is still the single index.html).
 - `capacitor.config.json` — config for wrapping as an iOS app (appId `com.scheidelholdings.callback`).
+- `NATIVE.md` — iOS setup for the native power-ups (reminders, calendar, contacts, Share Extension).
 - `APP_STORE.md` — runbook for shipping to the Apple App Store via Capacitor.
 - `README.md` — user-facing readme.
 
@@ -49,6 +51,13 @@ you paste into a new AI chat to prep for interviews.
 - `EDITORS` — `openEditor()` modal; `opForm / roundForm / personForm`; `openSettings / openResume / openStageEditor`.
 - `FILES` — JD/résumé attachments as base64 (`fileToData`, `downloadData`, `pickFileInto`).
 - `CALENDAR` — `.ics` + Google Calendar links (`downloadICS`, `googleCalUrl`, `findRound`).
+- `NATIVE (Capacitor iOS)` — device features, ALL guarded by `isNative()` so the web build is
+  untouched; plugins reached via `window.Capacitor.Plugins.*`. Local-notification reminders
+  (`syncReminders`/`enableReminders`, opt-in stored in `aiCfg.reminders`), on-device calendar scan
+  → Smart add (`scanCalendar`), Contacts pull into the person form incl. photo (`pullContactInto`,
+  `person.photo`), and share-into-app (`initShareIntake` reads `shared_intake` from an App Group via
+  Preferences + the `callback://` scheme). On web every action toasts "available in the iOS app".
+  Setup in `NATIVE.md`.
 - `EVENT WIRING` — one delegated `document` click handler. **If you add a new `data-*` button, add its attribute to the `closest(...)` selector** in that handler or it won't fire.
 
 ## Data model
