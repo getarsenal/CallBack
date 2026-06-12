@@ -1167,7 +1167,7 @@ function researchPrompt(o,p){
 let editorEl=null;
 function openEditor(html){
   closeEditor();
-  editorEl=el(`<div class="overlay show" id="editorOverlay" style="display:grid;place-items:center;padding:18px;overflow:auto">
+  editorEl=el(`<div class="overlay show" id="editorOverlay" style="z-index:150;display:grid;place-items:center;overflow:auto;padding:max(18px,env(safe-area-inset-top)) max(18px,env(safe-area-inset-right)) max(18px,env(safe-area-inset-bottom)) max(18px,env(safe-area-inset-left))">
     <div class="card" style="width:min(540px,100%);max-height:92vh;overflow:auto;padding:22px">${html}</div></div>`);
   document.body.appendChild(editorEl);
   editorEl.addEventListener("click",e=>{ if(e.target===editorEl) closeEditor(); }); // only background closes
